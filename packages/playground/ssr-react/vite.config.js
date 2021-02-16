@@ -9,6 +9,9 @@ module.exports = {
     jsxInject: `import React from 'react';`
   },
   build: {
-    minify: false
+    minify: false,
+    rollupOptions: {
+      input: ['./src/entry-about.jsx', './src/entry-home.jsx']
+    }
   }
 }

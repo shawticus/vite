@@ -6762,6 +6762,11 @@ rollup-plugin-license@^2.2.0:
     spdx-expression-validate "2.0.0"
     spdx-satisfies "5.0.0"
 
+rollup-plugin-virtual@^1.0.1:
+  version "1.0.1"
+  resolved "https://registry.yarnpkg.com/rollup-plugin-virtual/-/rollup-plugin-virtual-1.0.1.tgz#8227c94c605b981adfe433ea74de3551e42ffeb4"
+  integrity sha512-HCTBpV8MwP5lNzZrHD2moVxHIToHU1EkzkKGVj6Z0DcgUfxrxrZmeQirQeLz2yhnkJqRjwiVywK9CS8jDYakrw==
+
 rollup@^2.38.5:
   version "2.38.5"
   resolved "https://registry.yarnpkg.com/rollup/-/rollup-2.38.5.tgz#be41ad4fe0c103a8794377afceb5f22b8f603d6a"

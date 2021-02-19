@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link, Route, Switch } from 'react-router-dom'
 
 // Auto generates routes from files under ./pages
@@ -14,6 +15,8 @@ const routes = Object.keys(pages).map((path) => {
 })
 
 export function App() {
+  const [something, setSomething] = useState(true)
+
   return (
     <>
       <nav>

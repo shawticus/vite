@@ -27,6 +27,9 @@ async function createServer(
       logLevel: isTest ? 'error' : 'info',
       server: {
         middlewareMode: true
+      },
+      optimizeDeps: {
+        include: ['react-dom/server']
       }
     })
     // use vite's connect instance as middleware
@@ -44,6 +47,8 @@ async function createServer(
     try {
       const url = req.originalUrl
 
+      const ReactDOMServer = (await vite.ssrLoadModule('react-dom/server'))
+        .default
       let template, render
       if (!isProd) {
         // always read fresh template in dev
@@ -56,7 +61,7 @@ async function createServer(
       }
 
       const context = {}
-      const appHtml = render(url, context)
+      const appHtml = ReactDOMServer.renderToString(render(url, context))
 
       if (context.url) {
         // Somewhere a `<Redirect>` was rendered

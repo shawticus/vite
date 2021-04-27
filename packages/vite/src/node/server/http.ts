@@ -31,11 +31,12 @@ export async function resolveHttpServer(
 export async function resolveHttpsConfig(
   config: ResolvedConfig
 ): Promise<HttpsServerOptions | undefined> {
+  if (config.server.https === false || config.server.https == null) {
+    return undefined
+  }
+  
   const httpsOption =
-    typeof config.server.https === 'boolean' ? {} : config.server.https
-
-  if (!httpsOption) return undefined
-
+    config.server.https === true ? {} : config.server.https
   const { ca, cert, key, pfx } = httpsOption
   Object.assign(httpsOption, {
     ca: readFileIfExists(ca),

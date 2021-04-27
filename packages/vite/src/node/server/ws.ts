@@ -35,15 +35,17 @@ export function createWebSocketServer(
       }
     })
   } else {
-    let websocketServerOptions: WebSocket.ServerOptions = {}
-    const port = (hmr && hmr.port) || 24678
+    const websocketServerOptions: WebSocket.ServerOptions = {}
+    const port = hmr ? hmr.port : 24678
     if (httpsOptions) {
       // if we're serving the middlewares over https, the ws library doesn't support automatically creating an https server, so we need to do it ourselves
       // create an inline https server and mount the websocket server to it
       const httpsServer = createHttpsServer(httpsOptions, (req, res) => {
-        const body = STATUS_CODES[426]
+        const UPGRADE_REQUIRED = 426
 
-        res.writeHead(426, {
+        const body = STATUS_CODES[UPGRADE_REQUIRED]!
+
+        res.writeHead(UPGRADE_REQUIRED, {
           'Content-Length': body!.length,
           'Content-Type': 'text/plain'
         })

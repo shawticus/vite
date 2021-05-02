@@ -189,14 +189,14 @@ function viteLegacyPlugin(options = {}) {
         }
 
         if (raw.includes(legacyEnvVarMarker)) {
-          const re = new RegExp(`"${legacyEnvVarMarker}"`, 'g')
+          const re = new RegExp(legacyEnvVarMarker, 'g')
           if (config.build.sourcemap) {
             const s = new MagicString(raw)
             let match
             while ((match = re.exec(raw))) {
               s.overwrite(
                 match.index,
-                match.index + legacyEnvVarMarker.length + 2,
+                match.index + legacyEnvVarMarker.length,
                 `false`
               )
             }
@@ -226,6 +226,7 @@ function viteLegacyPlugin(options = {}) {
       // transform the legacy chunk with @babel/preset-env
       const sourceMaps = !!config.build.sourcemap
       const { code, map } = loadBabel().transform(raw, {
+        babelrc: false,
         configFile: false,
         compact: true,
         sourceMaps,
@@ -367,7 +368,7 @@ function viteLegacyPlugin(options = {}) {
     }
   }
 
-  let envInjectionFaled = false
+  let envInjectionFailed = false
   /**
    * @type {import('vite').Plugin}
    */
@@ -383,12 +384,12 @@ function viteLegacyPlugin(options = {}) {
           }
         }
       } else {
-        envInjectionFaled = true
+        envInjectionFailed = true
       }
     },
 
     configResolved(config) {
-      if (envInjectionFaled) {
+      if (envInjectionFailed) {
         config.logger.warn(
           `[@vitejs/plugin-legacy] import.meta.env.LEGACY was not injected due ` +
             `to incompatible vite version (requires vite@^2.0.0-beta.69).`
@@ -408,6 +409,7 @@ function viteLegacyPlugin(options = {}) {
 function detectPolyfills(code, targets, list) {
   const { ast } = loadBabel().transform(code, {
     ast: true,
+    babelrc: false,
     configFile: false,
     presets: [
       [
@@ -550,8 +552,8 @@ function replaceLegacyEnvBabelPlugin() {
   return ({ types: t }) => ({
     name: 'vite-replace-env-legacy',
     visitor: {
-      StringLiteral(path) {
-        if (path.node.value === legacyEnvVarMarker) {
+      Identifier(path) {
+        if (path.node.name === legacyEnvVarMarker) {
           path.replaceWith(t.booleanLiteral(true))
         }
       }
@@ -563,7 +565,7 @@ module.exports = viteLegacyPlugin
 
 viteLegacyPlugin.default = viteLegacyPlugin
 
-viteLegacyPlugin.cpsHashes = [
+viteLegacyPlugin.cspHashes = [
   createHash('sha256').update(safari10NoModuleFix).digest('base64'),
   createHash('sha256').update(systemJSInlineCode).digest('base64')
 ]

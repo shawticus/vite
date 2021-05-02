@@ -1,7 +1,6 @@
 import fs from 'fs'
 import path from 'path'
 import { Plugin } from './plugin'
-import Rollup from 'rollup'
 import { BuildOptions, resolveBuildOptions } from './build'
 import { ServerOptions } from './server'
 import { CSSOptions } from './plugins/css'
@@ -14,7 +13,7 @@ import {
 } from './utils'
 import { resolvePlugins } from './plugins'
 import chalk from 'chalk'
-import { ESBuildOptions, esbuildPlugin, stopService } from './plugins/esbuild'
+import { ESBuildOptions } from './plugins/esbuild'
 import dotenv from 'dotenv'
 import dotenvExpand from 'dotenv-expand'
 import { Alias, AliasOptions } from 'types/alias'
@@ -35,6 +34,7 @@ import {
   PluginContainer
 } from './server/pluginContainer'
 import aliasPlugin from '@rollup/plugin-alias'
+import { build } from 'esbuild'
 
 const debug = createDebugger('vite:config')
 
@@ -45,8 +45,8 @@ export interface ConfigEnv {
   mode: string
 }
 
-export type UserConfigFn = (env: ConfigEnv) => UserConfig
-export type UserConfigExport = UserConfig | UserConfigFn
+export type UserConfigFn = (env: ConfigEnv) => UserConfig | Promise<UserConfig>
+export type UserConfigExport = UserConfig | Promise<UserConfig> | UserConfigFn
 
 /**
  * Type helper to make it easier to use vite.config.ts
@@ -57,6 +57,8 @@ export type UserConfigExport = UserConfig | UserConfigFn
 export function defineConfig(config: UserConfigExport): UserConfigExport {
   return config
 }
+
+export type PluginOption = Plugin | false | null | undefined
 
 export interface UserConfig {
   /**
@@ -90,7 +92,7 @@ export interface UserConfig {
   /**
    * Array of vite plugins to use.
    */
-  plugins?: (Plugin | Plugin[])[]
+  plugins?: (PluginOption | PluginOption[])[]
   /**
    * Configure resolver
    */
@@ -158,12 +160,13 @@ export interface SSROptions {
 
 export interface InlineConfig extends UserConfig {
   configFile?: string | false
+  envFile?: false
 }
 
 export type ResolvedConfig = Readonly<
   Omit<UserConfig, 'plugins' | 'alias' | 'dedupe' | 'assetsInclude'> & {
     configFile: string | undefined
-    inlineConfig: UserConfig
+    inlineConfig: InlineConfig
     root: string
     base: string
     publicDir: string
@@ -197,7 +200,6 @@ export async function resolveConfig(
 ): Promise<ResolvedConfig> {
   let config = inlineConfig
   let mode = inlineConfig.mode || defaultMode
-  const logger = createLogger(config.logLevel, config.clearScreen)
 
   // some dependencies e.g. @vue/compiler-* relies on NODE_ENV for getting
   // production-specific behavior, so set it here even though we haven't
@@ -224,27 +226,31 @@ export async function resolveConfig(
       configFile = loadResult.path
     }
   }
+
+  // Define logger
+  const logger = createLogger(config.logLevel, config.clearScreen)
+
   // user config may provide an alternative mode
   mode = config.mode || mode
 
   // resolve plugins
   const rawUserPlugins = (config.plugins || []).flat().filter((p) => {
-    return !p.apply || p.apply === command
-  })
+    return p && (!p.apply || p.apply === command)
+  }) as Plugin[]
   const [prePlugins, normalPlugins, postPlugins] = sortUserPlugins(
     rawUserPlugins
   )
 
   // run config hooks
   const userPlugins = [...prePlugins, ...normalPlugins, ...postPlugins]
-  userPlugins.forEach((p) => {
+  for (const p of userPlugins) {
     if (p.config) {
-      const res = p.config(config, configEnv)
+      const res = await p.config(config, configEnv)
       if (res) {
         config = mergeConfig(config, res)
       }
     }
-  })
+  }
 
   // resolve root
   const resolvedRoot = normalizePath(
@@ -268,16 +274,7 @@ export async function resolveConfig(
   }
 
   // load .env files
-  const userEnv = loadEnv(mode, resolvedRoot)
-  // check if user defined any import.meta.env variables
-  if (config.define) {
-    const prefix = `import.meta.env.`
-    for (const key in config.define) {
-      if (key.startsWith(prefix)) {
-        userEnv[key.slice(prefix.length)] = config.define[key]
-      }
-    }
-  }
+  const userEnv = inlineConfig.envFile !== false && loadEnv(mode, resolvedRoot)
 
   // Note it is possible for user to have a custom mode, e.g. `staging` where
   // production-like behavior is expected. This is indicated by NODE_ENV=production
@@ -380,11 +377,7 @@ export async function resolveConfig(
   )
 
   // call configResolved hooks
-  userPlugins.forEach((p) => {
-    if (p.configResolved) {
-      p.configResolved(resolved)
-    }
-  })
+  await Promise.all(userPlugins.map((p) => p.configResolved?.(resolved)))
 
   if (process.env.DEBUG) {
     debug(`using resolved config: %O`, {
@@ -509,11 +502,11 @@ function resolveBaseUrl(
   return base
 }
 
-export function mergeConfig(
+function mergeConfigRecursively(
   a: Record<string, any>,
   b: Record<string, any>,
-  isRoot = true
-): Record<string, any> {
+  rootPath: string
+) {
   const merged: Record<string, any> = { ...a }
   for (const key in b) {
     const value = b[key]
@@ -527,16 +520,20 @@ export function mergeConfig(
       continue
     }
     if (isObject(existing) && isObject(value)) {
-      merged[key] = mergeConfig(existing, value, false)
+      merged[key] = mergeConfigRecursively(
+        existing,
+        value,
+        rootPath ? `${rootPath}.${key}` : key
+      )
       continue
     }
 
-    // root fields that require special handling
-    if (existing != null && isRoot) {
-      if (key === 'alias') {
+    // fields that require special handling
+    if (existing != null) {
+      if (key === 'alias' && (rootPath === 'resolve' || rootPath === '')) {
         merged[key] = mergeAlias(existing, value)
         continue
-      } else if (key === 'assetsInclude') {
+      } else if (key === 'assetsInclude' && rootPath === '') {
         merged[key] = [].concat(existing, value)
         continue
       }
@@ -545,6 +542,14 @@ export function mergeConfig(
     merged[key] = value
   }
   return merged
+}
+
+export function mergeConfig(
+  a: Record<string, any>,
+  b: Record<string, any>,
+  isRoot = true
+): Record<string, any> {
+  return mergeConfigRecursively(a, b, isRoot ? '' : '.')
 }
 
 function mergeAlias(a: AliasOptions = [], b: AliasOptions = []): Alias[] {
@@ -617,6 +622,7 @@ export async function loadConfigFromFile(
   if (configFile) {
     // explicit config path is always resolved from cwd
     resolvedPath = path.resolve(configFile)
+    isTS = configFile.endsWith('.ts')
   } else {
     // implicit config file loaded from inline root (if present)
     // otherwise from cwd
@@ -687,9 +693,11 @@ export async function loadConfigFromFile(
         const ignored = new RegExp(
           [
             `Cannot use import statement`,
-            `Unexpected token 'export'`,
             `Must use import to load ES Module`,
-            `Unexpected identifier` // #1635 Node <= 12.4 has no esm detection
+            // #1635, #2050 some Node 12.x versions don't have esm detection
+            // so it throws normal syntax errors when encountering esm syntax
+            `Unexpected token`,
+            `Unexpected identifier`
           ].join('|')
         )
         if (!ignored.test(e.message)) {
@@ -708,8 +716,9 @@ export async function loadConfigFromFile(
       debug(`bundled config file loaded in ${Date.now() - start}ms`)
     }
 
-    const config =
-      typeof userConfig === 'function' ? userConfig(configEnv) : userConfig
+    const config = await (typeof userConfig === 'function'
+      ? userConfig(configEnv)
+      : userConfig)
     if (!isObject(config)) {
       throw new Error(`config must export or return an object.`)
     }
@@ -722,8 +731,6 @@ export async function loadConfigFromFile(
       chalk.red(`failed to load config from ${resolvedPath}`)
     )
     throw e
-  } finally {
-    await stopService()
   }
 }
 
@@ -731,43 +738,52 @@ async function bundleConfigFile(
   fileName: string,
   mjs = false
 ): Promise<string> {
-  const rollup = require('rollup') as typeof Rollup
-  // node-resolve must be imported since it's bundled
-  const bundle = await rollup.rollup({
-    external: (id: string) =>
-      (id[0] !== '.' && !path.isAbsolute(id)) ||
-      id.slice(-5, id.length) === '.json',
-    input: fileName,
-    treeshake: false,
+  const result = await build({
+    entryPoints: [fileName],
+    outfile: 'out.js',
+    write: false,
+    platform: 'node',
+    bundle: true,
+    format: mjs ? 'esm' : 'cjs',
     plugins: [
-      // use esbuild + node-resolve to support .ts files
-      esbuildPlugin({ target: 'esnext' }),
-      resolvePlugin({
-        root: path.dirname(fileName),
-        isBuild: true,
-        asSrc: false,
-        isProduction: false
-      }),
+      {
+        name: 'externalize-deps',
+        setup(build) {
+          build.onResolve({ filter: /.*/ }, (args) => {
+            const id = args.path
+            if (id[0] !== '.' && !path.isAbsolute(id)) {
+              return {
+                external: true
+              }
+            }
+          })
+        }
+      },
       {
         name: 'replace-import-meta',
-        transform(code, id) {
-          return code.replace(
-            /\bimport\.meta\.url\b/g,
-            JSON.stringify(`file://${id}`)
-          )
+        setup(build) {
+          build.onLoad({ filter: /\.[jt]s$/ }, async (args) => {
+            const contents = await fs.promises.readFile(args.path, 'utf8')
+            return {
+              loader: args.path.endsWith('.ts') ? 'ts' : 'js',
+              contents: contents
+                .replace(
+                  /\bimport\.meta\.url\b/g,
+                  JSON.stringify(`file://${args.path}`)
+                )
+                .replace(
+                  /\b__dirname\b/g,
+                  JSON.stringify(path.dirname(args.path))
+                )
+                .replace(/\b__filename\b/g, JSON.stringify(args.path))
+            }
+          })
         }
       }
     ]
   })
-
-  const {
-    output: [{ code }]
-  } = await bundle.generate({
-    exports: mjs ? 'auto' : 'named',
-    format: mjs ? 'es' : 'cjs'
-  })
-
-  return code
+  const { text } = result.outputFiles[0]
+  return text
 }
 
 interface NodeModuleWithCompile extends NodeModule {
@@ -795,7 +811,11 @@ async function loadConfigFromBundledFile(
   return config
 }
 
-export function loadEnv(mode: string, root: string, prefix = 'VITE_') {
+export function loadEnv(
+  mode: string,
+  root: string,
+  prefix = 'VITE_'
+): Record<string, string> {
   if (mode === 'local') {
     throw new Error(
       `"local" cannot be used as a mode name because it conflicts with ` +

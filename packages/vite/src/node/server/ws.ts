@@ -1,5 +1,9 @@
 import chalk from 'chalk'
-import { Server } from 'http'
+import { Server, STATUS_CODES } from 'http'
+import {
+  createServer as createHttpsServer,
+  ServerOptions as HttpsServerOptions
+} from 'https'
 import WebSocket from 'ws'
 import { ErrorPayload, HMRPayload } from 'types/hmrPayload'
 import { ResolvedConfig } from '..'
@@ -13,13 +17,17 @@ export interface WebSocketServer {
 
 export function createWebSocketServer(
   server: Server | null,
-  config: ResolvedConfig
+  config: ResolvedConfig,
+  httpsOptions?: HttpsServerOptions
 ): WebSocketServer {
   let wss: WebSocket.Server
 
-  if (server) {
+  const hmr = typeof config.server.hmr === 'object' && config.server.hmr
+  const wsServer = (hmr && hmr.server) || server
+
+  if (wsServer) {
     wss = new WebSocket.Server({ noServer: true })
-    server.on('upgrade', (req, socket, head) => {
+    wsServer.on('upgrade', (req, socket, head) => {
       if (req.headers['sec-websocket-protocol'] === HMR_HEADER) {
         wss.handleUpgrade(req, socket, head, (ws) => {
           wss.emit('connection', ws, req)
@@ -27,12 +35,32 @@ export function createWebSocketServer(
       }
     })
   } else {
+    const websocketServerOptions: WebSocket.ServerOptions = {}
+    const port = hmr ? hmr.port : 24678
+    if (httpsOptions) {
+      // if we're serving the middlewares over https, the ws library doesn't support automatically creating an https server, so we need to do it ourselves
+      // create an inline https server and mount the websocket server to it
+      const httpsServer = createHttpsServer(httpsOptions, (req, res) => {
+        const UPGRADE_REQUIRED = 426
+
+        const body = STATUS_CODES[UPGRADE_REQUIRED]!
+
+        res.writeHead(UPGRADE_REQUIRED, {
+          'Content-Length': body!.length,
+          'Content-Type': 'text/plain'
+        })
+        res.end(body)
+      })
+
+      httpsServer.listen(port)
+      websocketServerOptions.server = httpsServer
+    } else {
+      // we don't need to serve over https, just let ws handle its own server
+      websocketServerOptions.port = port
+    }
+
     // vite dev server in middleware mode
-    wss = new WebSocket.Server({
-      port:
-        (typeof config.server.hmr === 'object' && config.server.hmr.port) ||
-        24678
-    })
+    wss = new WebSocket.Server(websocketServerOptions)
   }
 
   wss.on('connection', (socket) => {
